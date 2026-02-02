@@ -12,15 +12,14 @@ Abstract:
 
 /*  WiFi credentials */
 const char* ssid = "--";
-const char* password = "-----";
+const char* password = "--";
 
 /*  MQTT broker */
-const char* mqttServer = "----"; // IP of the Raspberry Pi running your broker
-const int mqtt_port = 19000;
+const char* mqttServer = "-.-.-.-"; // IP of the Raspberry Pi running your broker
+const int mqtt_port = -;
 
 /*  Stock symbol to follow */
-const char* stockSymbol = "STOCK"; // set this up to be based on what stock comes in from a subscribe.
-                                  //  make it to where i can dynamically subscribe to different stocks from SSH
+const char* stockSymbol = "STOCK";
 
 /*  WiFi and MQTT clients */
 WiFiClient espClient;
@@ -29,10 +28,18 @@ PubSubClient client(espClient);
 /*  Strategy threshold */
 float priceThreshold = 90.0;  // Example: take action if price drops below this
 
+typedef enum {
+  SIGNAL_BUY,
+  SIGNAL_SELL,
+  SIGNAL_HOLD
+ } TradeSignal;
+
+
 
 
 /*  1.) data organization layer */
 
+// The market tick
 typedef struct {
   const char* symbol;
   double price;
@@ -41,6 +48,8 @@ typedef struct {
   uint64_t ts_ns;
 } Market_Tick;
 
+
+// The change in the stock. This struct optimizes for EMA decision
 typedef struct {
   double last_price;       // historic data
   int last_volume;
@@ -56,6 +65,7 @@ typedef struct {
 } Stock_Delta;
 
 
+// This parses the stock ticks given by the broker via MQTT
 void update_tick_from_JSON(Market_Tick *m, JsonDocument& doc) {
     m->symbol     = doc["symbol"];
     m->price      = doc["price"].as<double>();
@@ -64,12 +74,17 @@ void update_tick_from_JSON(Market_Tick *m, JsonDocument& doc) {
     m->ts_ns      = doc["ts"].as<uint64_t>();
 }
 
+
 /*   2.) stock characteristics layer  */
-void stock_initialization(Stock_Delta *f){]
+
+// Initialization of stock
+void stock_initialization(Stock_Delta *f){
   memset(f, 0, sizeof(*f));
 }
 
-void stock_update(Stock_Delta *f, const Market_Tick *t) {
+// Update of the change in price of the stock in that specific
+// stock's struct
+void stock_update(Stock_Delta *f, Market_Tick *t) {
     const double alpha = 0.05;
 
     if (f->tick_count == 0) {
@@ -96,14 +111,8 @@ void stock_update(Stock_Delta *f, const Market_Tick *t) {
 
 /*   3.) Stratgy Layer  */
 
-typedef enum {
-  SIGNAL_BUY = 1;
-  SIGNAL_SELL = - 1;
-  SIGNAL_HOLD = 0;
-} TradeSignal;
-
-
-TradeSignal strategy_decide(const Stock_Delta *f) {
+// The signifier on what to do with the stock
+TradeSignal strategy_decide(Stock_Delta *f) {
     if (f->tick_count < 10)
         return SIGNAL_HOLD;
 
@@ -117,18 +126,6 @@ TradeSignal strategy_decide(const Stock_Delta *f) {
     return SIGNAL_HOLD;
 }
 
-/*   4.) Logging of final decision per tick via MQTT */
-void on_market_tick(const Market_Tick *t) {
-    stock_update(&some_stock, t);
-
-    TradeSignal sig = strategy_decide(&some_stock);
-
-    if (sig != SIGNAL_HOLD)
-        publish_signal(sig); // MQTT call to publish on the Pi Broker log.
-}
-
-
-
 
 
 
@@ -137,10 +134,23 @@ void on_market_tick(const Market_Tick *t) {
 
 Market_Tick tick;
 Stock_Delta some_stock;
-stock_initialization(some_stock);
 
 
 
+/*   4.) Logging of final decision per tick via MQTT */
+
+// Decision for what to do per stock tick
+void on_market_tick(Market_Tick *t, Stock_Delta *f) {
+    stock_update(f, t);
+
+    TradeSignal sig = strategy_decide(f);
+
+    Serial.print("Strategy: ");
+    Serial.println(sig);
+
+    //if (sig != SIGNAL_HOLD)
+      //publish_signal(sig); // MQTT call to publish on the Pi Broker log.
+}
 
 /* Connect to WiFi */
 void setup_wifi() {
@@ -152,6 +162,8 @@ void setup_wifi() {
   }
   Serial.println("\nConnected to WiFi!");
 }
+
+
 
 /*  Callback when message is received */
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -175,9 +187,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   /*  Update market tick from parsed data   */
-  update_tick_from_JSON(tick);
+  update_tick_from_JSON(&tick, doc);
   /*  Update stock with the latest tick's data  */
-  stock_update(some_stock, tick);
+  stock_update(&some_stock, &tick);
+
+  /*  What to do based on the updating price */
+  on_market_tick(&tick,&some_stock);
 
 }
 
@@ -202,45 +217,9 @@ void reconnect() {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void setup() {
   Serial.begin(115200);
+  stock_initialization(&some_stock);
   setup_wifi();
   client.setServer(mqttServer, mqtt_port);
   client.setCallback(callback);
